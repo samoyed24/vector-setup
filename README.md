@@ -6,13 +6,25 @@
 
 ## 快速使用
 
-在已登录 GitHub CLI 的管理电脑上拉取私有仓库：
+从管理电脑直接运行。已有 Vector 时可以先用 `plan` 查看变更：
 
 ```sh
-gh repo clone samoyed24/vector-setup
+curl -fsSL https://raw.githubusercontent.com/samoyed24/vector-setup/main/bootstrap.sh | bash -s -- plan --ssh aws-hk
 ```
 
-进入 `vector-setup` 目录后执行下面的命令。已克隆时用 `git pull --ff-only` 更新。
+把服务器通过 SSH 接入现有 Loki 时，将 `NEW_SERVER` 和 `ACTUAL_EGRESS_IP` 替换为目标机别名和实际出口 IP：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/samoyed24/vector-setup/main/bootstrap.sh | bash -s -- deploy --ssh NEW_SERVER --receiver oci-sg-west --egress-ip ACTUAL_EGRESS_IP
+```
+
+直接在服务器上安装时，传入本机已有的 Loki 写入凭据文件：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/samoyed24/vector-setup/main/bootstrap.sh | sudo bash -s -- install --host my-node --credentials-file /root/loki-push.env
+```
+
+入口需要 Bash、curl 和 tar，脚本运行还需要下文列出的 Python 版本。命令默认下载 `main`，可在 `bash` 前设置 `VECTOR_SETUP_REF` 为固定提交或版本标签。也可用 `git clone https://github.com/samoyed24/vector-setup.git` 下载后执行下面的命令。已克隆时用 `git pull --ff-only` 更新。
 
 ```sh
 # 只看识别结果和预期变更
@@ -48,7 +60,7 @@ gh repo clone samoyed24/vector-setup
 
 Debian / Ubuntu 使用 systemd。Alpine 使用 OpenRC 与 [Vector 官方 musl 构建](https://vector.dev/docs/setup/installation/manual/from-archives/)，从独立文件采集日志。若 Alpine 的代理只写标准输出，先在代理配置中指定日志文件。脚本可以从运行配置识别日志路径，也可用 `--log-file /绝对路径/access.log` 指定路径。Alpine 每日清理任务由运行中的 `crond` 执行。
 
-目标机需要 Python 3.11+ 与 CA 证书。Alpine 精简系统本机执行时可先以 root 运行 `apk add python3 bash ca-certificates`。SSH 部署只在目标机调用 Python，Bash 入口在管理电脑上运行。
+目标机需要 Python 3.11+ 与 CA 证书。Alpine 精简系统本机执行时可先以 root 运行 `apk add python3 bash curl ca-certificates`。SSH 部署只在目标机调用 Python，Bash 入口在管理电脑上运行。
 
 把整个包复制到服务器，准备仅 root 可读的凭据文件：
 
