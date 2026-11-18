@@ -12,10 +12,10 @@
 curl -fsSL https://raw.githubusercontent.com/samoyed24/vector-setup/main/bootstrap.sh | bash -s -- plan --ssh aws-hk
 ```
 
-把服务器通过 SSH 接入现有 Loki 时，将 `NEW_SERVER` 和 `ACTUAL_EGRESS_IP` 替换为目标机别名和实际出口 IP：
+把服务器通过 SSH 接入现有 Loki 时，将 `NEW_SERVER` 替换为目标机别名：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/samoyed24/vector-setup/main/bootstrap.sh | bash -s -- deploy --ssh NEW_SERVER --receiver oci-sg-west --egress-ip ACTUAL_EGRESS_IP
+curl -fsSL https://raw.githubusercontent.com/samoyed24/vector-setup/main/bootstrap.sh | bash -s -- deploy --ssh NEW_SERVER --receiver oci-sg-west
 ```
 
 直接在服务器上安装时，传入本机已有的 Loki 写入凭据文件：
@@ -32,9 +32,9 @@ curl -fsSL https://raw.githubusercontent.com/samoyed24/vector-setup/main/bootstr
 ./vector-setup.sh plan --ssh aws-hk
 
 # 新服务器：自动选择包架构、安装 Vector、生成配置、接入现有 Loki
-# 把 NEW_SERVER 和 ACTUAL_EGRESS_IP 换成真实 SSH 别名与访问 Loki 的出口 IP
+# 把 NEW_SERVER 换成真实 SSH 别名
 ./vector-setup.sh deploy --ssh NEW_SERVER \
-  --receiver oci-sg-west --egress-ip ACTUAL_EGRESS_IP
+  --receiver oci-sg-west
 
 # 首次接管其他已安装 Vector 的机器：明确加上此选项
 ./vector-setup.sh deploy --ssh gc-jp \
@@ -54,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/samoyed24/vector-setup/main/bootstr
 
 默认复用目标机已有凭据。指定 `--receiver` 后，工具通过现有 SSH 认证安全读取接收端的专用 Loki 写入凭据，传到目标机的临时受限文件中，不打印凭据，不在参数中传密码。接收端 SSH 私钥留在管理电脑。
 
-`--egress-ip` 必须是采集机实际访问 Loki 的源地址。不能直接用 SSH 别名解析结果推测；有 NAT、代理或 IPv6 时尤其要核对。未指定时沿用接收端现有授权，健康检查失败就停止/回滚，不自动开放整个网段。
+`deploy --receiver` 会从采集机发出一次带随机标记的 HTTPS 健康检查请求，再从接收端 Nginx 的 Loki 访问日志中识别它看到的源地址。探测不发送 Loki 凭据，接收端只放行该单个地址。如果使用了自定义日志格式、代理网络或多个出口，必要时用 `--egress-ip` 显式指定地址。
 
 ## 服务器本机安装
 
@@ -75,7 +75,7 @@ sudo ./vector-setup.sh install --host my-node \
   --credentials-file /root/loki-push.env
 ```
 
-本机安装不会替你登录另一台服务器。接收端尚未放行时，先在接收端完成授权，或改用管理电脑上的 `deploy --receiver --egress-ip` 模式。
+本机安装可沿用接收端已有授权，也可从管理电脑使用 `deploy --receiver` 自动完成放行。
 
 ## 自动识别及覆盖
 

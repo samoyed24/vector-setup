@@ -8,6 +8,17 @@ def load(name):
 agent=load('agent');cli=load('cli')
 
 class SetupTests(unittest.TestCase):
+    def test_egress_uses_receiver_source_and_exact_probe(self):
+        probe = 'b' * 32
+        with tempfile.TemporaryDirectory() as directory:
+            log = pathlib.Path(directory) / 'loki.log'
+            log.write_text(
+                '192.0.2.2 - - [date] "GET /ready HTTP/1.1" 200 0 "-" "-"\n'
+                '192.0.2.3 - - [date] "GET /ready?vector_setup_probe=' + probe + 'x HTTP/1.1" 401 0 "-" "-"\n'
+                '2001:db8::2 - - [date] "GET /ready?vector_setup_probe=' + probe + ' HTTP/1.1" 403 0 "-" "-"\n'
+            )
+            self.assertEqual(agent.observed_egress(probe, log), '2001:db8::2')
+
     def setUp(self):
         os_check = patch.object(agent, 'alpine', return_value=False)
         self.platform = os_check.start()

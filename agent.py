@@ -3,6 +3,8 @@
 import argparse, contextlib, datetime, fcntl, hashlib, ipaddress, json, os, pathlib
 import platform, tarfile
 import re, shlex, shutil, sqlite3, subprocess, sys, tempfile, time, urllib.request
+from urllib.error import HTTPError
+from urllib.parse import urlsplit
 try:
     import tomllib
 except ImportError:
@@ -529,6 +531,50 @@ def receiver_allow(address, remove=False):
     with managed_lock('/run/lock/vector-setup-receiver.lock'):
         return _receiver_allow(address,remove)
 
+def probe_path(nonce):
+    if not re.fullmatch(r'[0-9a-f]{32}', nonce or ''):
+        raise RuntimeError('Invalid egress probe ID')
+    return '/ready?vector_setup_probe=' + nonce
+
+def send_egress_probe(endpoint, nonce):
+    url = urlsplit(endpoint)
+    if (url.scheme != 'https' or not url.hostname or url.username or url.password
+            or url.path not in ('', '/') or url.query or url.fragment):
+        raise RuntimeError('Egress detection requires a bare HTTPS Loki origin')
+    request = urllib.request.Request(url._replace(path='').geturl() + probe_path(nonce))
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    try:
+        with opener.open(request, timeout=8) as response:
+            return response.status
+    except HTTPError as response:
+        with response:
+            if response.code in (401, 403):
+                return response.code
+            raise
+
+def observed_egress(nonce, log=pathlib.Path('/var/log/nginx/loki-access.log')):
+    path = probe_path(nonce)
+    request_pattern = re.compile(r'^([^ ]+) .*"GET ' + re.escape(path) + r' HTTP/[^"]+" ')
+    for _ in range(5):
+        with log.open('rb') as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 1024 * 1024))
+            lines = stream.read().decode(errors='replace').splitlines()
+        addresses = set()
+        for line in lines:
+            match = request_pattern.match(line)
+            if match:
+                addresses.add(str(ipaddress.ip_address(match.group(1))))
+        if len(addresses) == 1:
+            return addresses.pop()
+        if addresses:
+            raise RuntimeError('Probe matches more than one source address')
+        time.sleep(1)
+    raise RuntimeError('Probe not found in the receiver Loki access log; specify --egress-ip if needed')
+
 def _receiver_allow(address, remove=False):
     address=str(ipaddress.ip_address(address))
     live=pathlib.Path('/etc/nginx/conf.d/loki-portcloud-online.conf')
@@ -558,7 +604,7 @@ def _receiver_allow(address, remove=False):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('action',choices=['inspect','plan','apply','check','rollback','allow','credentials','query'])
+    parser.add_argument('action',choices=['inspect','plan','apply','check','rollback','allow','credentials','query','probe','observed-egress'])
     parser.add_argument('--host',default='')
     parser.add_argument('--endpoint',default='https://loki.portcloud.online')
     parser.add_argument('--adopt-existing',action='store_true')
@@ -567,9 +613,14 @@ def main():
     parser.add_argument('--credentials-file')
     parser.add_argument('--backup')
     parser.add_argument('--address')
+    parser.add_argument('--probe-id')
     parser.add_argument('--remove',action='store_true')
     args=parser.parse_args()
     if os.geteuid()!=0:raise RuntimeError('Run as root or via non-interactive sudo')
+    if args.action=='probe':
+        print(json.dumps({'status': send_egress_probe(args.endpoint, args.probe_id)}));return
+    if args.action=='observed-egress':
+        print(json.dumps({'address': observed_egress(args.probe_id)}));return
     if args.action=='credentials':
         env=env_values();print(json.dumps({k:env[k] for k in ['LOKI_PUSH_USER','LOKI_PUSH_PASSWORD']}));return
     if args.action=='allow':print(json.dumps(receiver_allow(args.address,args.remove)));return

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Python 3.9+ SSH controller; remote Linux agent requires Python 3.11+."""
-import argparse, io, json, os, pathlib, re, shlex, subprocess, sys, tarfile, tempfile
+import argparse, io, json, os, pathlib, re, secrets, shlex, subprocess, sys, tarfile, tempfile
 import urllib.request
 
 HERE=pathlib.Path(__file__).resolve().parent
@@ -60,7 +60,7 @@ def main():
     parser.add_argument('--adopt-existing',action='store_true')
     parser.add_argument('--port-map',action='append',default=[],metavar='TAG=PUBLIC_PORT')
     parser.add_argument('--log-file',action='append',default=[],help='Additional absolute proxy log path on the target')
-    parser.add_argument('--egress-ip',help='Verified collector egress IP for receiver allowlist; never inferred from SSH hostname')
+    parser.add_argument('--egress-ip',help='Override automatic collector egress detection')
     parser.add_argument('--backup',help='Specific remote backup directory for rollback')
     args=parser.parse_args()
     host=args.host or args.ssh
@@ -102,17 +102,23 @@ def main():
                     with tempfile.NamedTemporaryFile(mode='w',prefix='vector-credentials-',delete=False) as f:
                         os.chmod(f.name,0o600);json.dump(values,f)
                     options+=['--credentials-file',f.name]
-            if action=='apply' and receiver and args.egress_ip:
-                added=receiver.agent(['allow','--address',args.egress_ip])
-            try:result=invoke(options)
+            egress_ip = args.egress_ip
+            try:
+                if action=='apply' and receiver:
+                    if not egress_ip:
+                        nonce = secrets.token_hex(16)
+                        invoke(['probe', '--endpoint', args.endpoint, '--probe-id', nonce])
+                        egress_ip = receiver.agent(['observed-egress', '--probe-id', nonce])['address']
+                    added=receiver.agent(['allow','--address',egress_ip])
+                result=invoke(options)
             except Exception:
                 if added and added['changed']:
-                    receiver.agent(['allow','--address',args.egress_ip,'--remove'])
+                    receiver.agent(['allow','--address',egress_ip,'--remove'])
                 raise
             finally:
                 if values and not target:pathlib.Path(f.name).unlink(missing_ok=True)
             if receiver:result['loki']=receiver.agent(['query','--host',host])
-            if not args.egress_ip:result['allowlist_note']='Existing receiver authorization was used. For a new collector supply --egress-ip with the verified actual source address.'
+            if added:result['receiver_allowlist']=added
         else:result=invoke(options)
         print(json.dumps(result,ensure_ascii=False,indent=2))
     finally:
