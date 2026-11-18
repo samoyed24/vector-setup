@@ -1,0 +1,121 @@
+  msg = to_string(.message) ?? ""
+  if contains(msg, "http: TLS handshake error") { abort }
+  noise = contains(msg, "login success") || contains(msg, "lookup redis") || contains(msg, "lookup backend") || contains(msg, "connection report") || contains(msg, "user  proxymgr")
+  if noise { abort }
+  keep = contains(msg, "inbound connection from") || contains(msg, "inbound packet connection from") || contains(msg, "inbound connection to") || contains(msg, "inbound packet connection to") || contains(msg, "process connection from") || contains(msg, "outbound connection to") || contains(msg, "outbound packet connection to") || contains(msg, "REALITY") || contains(msg, " accepted ") || contains(msg, " rejected ")
+  if !keep { abort }
+
+  src_ip = ""
+  src_port = ""
+  dst_host = ""
+  dst_port = ""
+  user = ""
+  inbound = ""
+  outbound = ""
+  network = ""
+  kind = "other"
+  ts_val = to_string(.timestamp) ?? ""
+
+  # ---- Xray access 完整单行 ----
+  # 2026/11/05 14:49:27.455201 from IP:PORT accepted tcp:HOST:PORT [IN >> OUT] email: USER
+  if contains(msg, " accepted ") || contains(msg, " rejected ") {
+    kind = "xray"
+    x = parse_regex(msg, r'(?P<date>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) from \[?(?P<ip>[0-9A-Fa-f:.]+)\]?:(?P<sport>\d+) (?P<act>\w+) (?P<net>\w+):(?P<dst>[^ ]+) \[(?P<inb>[^ ]+) (?:>>|->) (?P<outb>[^\]]+)\](?: email: (?P<usr>\S+))?') ?? {}
+    if exists(x.ip) { src_ip = to_string(x.ip) }
+    if exists(x.sport) { src_port = to_string(x.sport) }
+    if exists(x.dst) {
+      dst_full = to_string(x.dst)
+      dp = parse_regex(dst_full, r'^(?P<h>.*):(?P<p>\d+)$') ?? {}
+      if exists(dp.h) { dst_host = to_string(dp.h); dst_port = to_string(dp.p) } else { dst_host = dst_full }
+    }
+    if exists(x.net) { network = to_string(x.net) }
+    if exists(x.inb) { inbound = to_string(x.inb) }
+    if exists(x.outb) { outbound = to_string(x.outb) }
+    if exists(x.usr) { user = to_string(x.usr) }
+    if exists(x.date) { ts_val = to_string(x.date) }
+  }
+
+  # ---- sing-box: inbound ... from ----
+  if contains(msg, "connection from") && (contains(msg, "inbound") || contains(msg, "process connection")) {
+    kind = "from"
+    f = parse_regex(msg, r'from \[?(?P<ip>[0-9A-Fa-f:.]+)\]?:(?P<port>\d+)') ?? {}
+    if exists(f.ip) { src_ip = to_string(f.ip) }
+    if exists(f.port) { src_port = to_string(f.port) }
+    i = parse_regex(msg, r'inbound/(?P<proto>[^\[]+)\[(?P<tag>[^\]]+)\]') ?? {}
+    if exists(i.tag) { inbound = to_string(i.tag) }
+    if contains(msg, "packet") { network = "udp" } else { network = "tcp" }
+  }
+
+  # ---- sing-box: inbound ... to ----
+  if contains(msg, "inbound connection to") || contains(msg, "inbound packet connection to") {
+    kind = "to"
+    i = parse_regex(msg, r'inbound/(?P<proto>[^\[]+)\[(?P<tag>[^\]]+)\]') ?? {}
+    if exists(i.tag) { inbound = to_string(i.tag) }
+    u = parse_regex(msg, r'\[(?P<usr>pm_[^\]]+)\]') ?? {}
+    if exists(u.usr) { user = to_string(u.usr) }
+    t = parse_regex(msg, r'connection to (?P<dst>\S+)') ?? {}
+    if exists(t.dst) {
+      dst_full = to_string(t.dst)
+      dp = parse_regex(dst_full, r'^(?P<h>.*):(?P<p>\d+)$') ?? {}
+      if exists(dp.h) { dst_host = to_string(dp.h); dst_port = to_string(dp.p) } else { dst_host = dst_full }
+    }
+    if contains(msg, "packet") { network = "udp" } else { network = "tcp" }
+  }
+
+  # ---- sing-box: outbound ----
+  if contains(msg, "outbound connection to") || contains(msg, "outbound packet connection to") {
+    kind = "outbound"
+    o = parse_regex(msg, r'outbound/(?P<proto>[^\[]+)\[(?P<tag>[^\]]+)\]') ?? {}
+    if exists(o.tag) { outbound = to_string(o.tag) }
+    t = parse_regex(msg, r'connection to (?P<dst>\S+)') ?? {}
+    if exists(t.dst) {
+      dst_full = to_string(t.dst)
+      dp = parse_regex(dst_full, r'^(?P<h>.*):(?P<p>\d+)$') ?? {}
+      if exists(dp.h) { dst_host = to_string(dp.h); dst_port = to_string(dp.p) } else { dst_host = dst_full }
+    }
+    if contains(msg, "packet") { network = "udp" } else { network = "tcp" }
+  }
+
+  # ---- 探测 / 失败握手 ----
+  ev = "other"
+  if !contains(msg, " accepted ") && (contains(msg, "REALITY") || contains(msg, "TLS handshake") || contains(msg, "invalid connection") || contains(msg, " rejected ")) { ev = "handshake_failed" }
+  if ev == "other" && contains(msg, " accepted ") { ev = "accepted" }
+  if ev == "other" && contains(msg, "packet connection") { ev = "udp_session" }
+  if ev == "other" && contains(msg, "connection to") { ev = "connection_to" }
+  if ev == "other" && contains(msg, "connection from") { ev = "connection_from" }
+  bad = contains(msg, "ERROR") || contains(msg, "WARN") || contains(msg, "failed") || contains(msg, "invalid") || contains(msg, "rejected")
+  result_ok = if bad { "failure" } else { "ok" }
+  if kind == "other" && contains(msg, "REALITY") { kind = "probe" }
+  parse_status = "ok"
+  if kind == "xray" && inbound == "" {
+    parse_status = "unparsed"
+    kind = "unparsed"
+    ev = "parse_error"
+    result_ok = "unknown"
+  }
+
+__MAPPING__
+  connection_id = ""
+  cid = parse_regex(msg, r'\[(?P<id>\d+) [^\]]+\]') ?? {}
+  if exists(cid.id) { connection_id = to_string(cid.id) }
+
+  . = {
+    "ts": ts_val,
+    "host": __HOST_JSON__,
+    "proxy_port": proxy_port,
+    "listen_port": listen_port,
+    "connection_id": connection_id,
+    "src_ip": src_ip,
+    "src_port": src_port,
+    "dst_host": dst_host,
+    "dst_port": dst_port,
+    "user": user,
+    "inbound": inbound,
+    "outbound": outbound,
+    "network": network,
+    "event": ev,
+    "result": result_ok,
+    "kind": kind,
+    "parse_status": parse_status,
+    "raw": msg
+  }

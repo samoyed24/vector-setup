@@ -1,0 +1,24 @@
+  msg = to_string(.message) ?? ""
+  m = parse_regex(msg, r'^(?P<ip>\S+) (?P<host>\S+) (?P<uri>\S+) (?P<status>\d+) (?P<bytes>\d+) (?P<rt>[\d.]+) "(?P<ua>[^"]*)" (?P<cfip>\S+)$') ?? {}
+  if !exists(m.ip) { abort }
+  st = to_string(m.status)
+  ev = "other"
+  ok = "ok"
+  if st == "101" { ev = "tcp_session" } else { ev = "handshake_failed"; ok = "failure" }
+  . = {
+    "ts": to_string(.timestamp) ?? "",
+    "host": __HOST_JSON__,
+    "proxy_port": __PORT_JSON__,
+    "src_ip": to_string(m.ip),
+    "src_port": "",
+    "dst_host": to_string(m.host),
+    "dst_port": __PORT_JSON__,
+    "user": "",
+    "inbound": "vmess-cf",
+    "outbound": "",
+    "network": "tcp",
+    "event": ev,
+    "result": ok,
+    "kind": "nginx_ws",
+    "raw": msg
+  }
